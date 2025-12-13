@@ -1,0 +1,7 @@
+.DS_Store
+node_modules
+
+# Dictionary
+data/dictionary/letterLength
+data/dictionary/tiered.json
+data/dictionary/wordfreq-en-319938-zipf.json
