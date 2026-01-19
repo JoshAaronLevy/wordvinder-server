@@ -3,11 +3,22 @@ const cors = require('cors');
 const helmet = require('helmet');
 const path = require('path');
 const fs = require('fs');
+const multer = require('multer');
+
+const { runBoardExtraction } = require('./lib/difyClient');
+const { parseModelOutput, buildSummary } = require('./lib/boardState');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 const dictionaryPath = path.join(__dirname, 'data', 'dictionary', 'full.json');
+const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
+const ALLOWED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_IMAGE_SIZE_BYTES },
+});
 
 // Load dictionary data at startup. Exit early if the file is inaccessible.
 let dictionaryData;
@@ -24,6 +35,98 @@ app.use(cors());
 
 app.get('/api/v1/dictionary', (_req, res) => {
   res.json(dictionaryData);
+});
+
+app.post('/api/v1/board/parse-screenshot', (req, res) => {
+  upload.single('image')(req, res, async (error) => {
+    if (error) {
+      const message =
+        error.code === 'LIMIT_FILE_SIZE'
+          ? 'Image exceeds the maximum size limit.'
+          : 'Image upload failed.';
+      return res.status(400).json({
+        ok: false,
+        error: {
+          code: 'INVALID_IMAGE',
+          message,
+          details: error.code,
+        },
+      });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({
+        ok: false,
+        error: {
+          code: 'INVALID_IMAGE',
+          message: 'Missing image upload.',
+        },
+      });
+    }
+
+    if (!ALLOWED_IMAGE_MIME_TYPES.has(req.file.mimetype)) {
+      return res.status(400).json({
+        ok: false,
+        error: {
+          code: 'INVALID_IMAGE',
+          message: 'Unsupported image type.',
+          details: req.file.mimetype,
+        },
+      });
+    }
+
+    try {
+      const { modelText } = await runBoardExtraction({
+        fileBuffer: req.file.buffer,
+        fileName: req.file.originalname || 'screenshot',
+        mimeType: req.file.mimetype,
+        requestContext: {
+          ip: req.ip,
+          userAgent: req.get('user-agent'),
+        },
+      });
+
+      const parsed = parseModelOutput(modelText);
+      if (!parsed.ok) {
+        const response = {
+          ok: false,
+          error: parsed.error,
+        };
+        if (process.env.DEBUG_MODEL_OUTPUT === '1' && process.env.NODE_ENV !== 'production') {
+          response.debug = { modelText };
+        }
+        return res.status(502).json(response);
+      }
+
+      const summary = buildSummary(parsed.board);
+      const response = {
+        ok: true,
+        board: parsed.board,
+        summary,
+      };
+
+      if (process.env.DEBUG_MODEL_OUTPUT === '1' && process.env.NODE_ENV !== 'production') {
+        response.debug = { modelText };
+      }
+
+      return res.json(response);
+    } catch (err) {
+      const response = {
+        ok: false,
+        error: {
+          code: err.code || 'DIFY_ERROR',
+          message: err.message || 'Failed to process image.',
+          details: err.details,
+        },
+      };
+
+      return res.status(502).json(response);
+    }
+  });
+});
+
+process.on('unhandledRejection', (error) => {
+  console.error('Unhandled promise rejection:', error);
 });
 
 app.listen(PORT, () => {

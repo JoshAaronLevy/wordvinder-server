@@ -1,0 +1,12 @@
+/Users/joshlevy/Desktop/word-vinder-server
+├── README.md
+├── data
+|  └── dictionary
+|     ├── full.json
+├── index.js
+├── package-lock.json
+└── package.json
+
+directory: 169 file: 838
+
+ignored: directory (1)
