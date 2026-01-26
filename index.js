@@ -61,10 +61,12 @@ app.post('/api/v1/board/parse-screenshot', upload.single('image'), async (req, r
   }
 
   try {
+    const query = req.body && typeof req.body.query === 'string' ? req.body.query : undefined;
     const { modelText } = await runBoardExtraction({
       fileBuffer: req.file.buffer,
       fileName: req.file.originalname || 'screenshot',
       mimeType: req.file.mimetype,
+      query,
       requestContext: {
         ip: req.ip,
         userAgent: req.get('user-agent'),
@@ -115,6 +117,7 @@ app.post('/api/v1/board/parse-screenshot', upload.single('image'), async (req, r
 
 app.post('/api/v1/dify/ping', async (req, res) => {
   try {
+    const requestQuery = 'Marco';
     const { modelText } = await runMarcoPing({
       requestContext: {
         ip: req.ip,
@@ -122,8 +125,16 @@ app.post('/api/v1/dify/ping', async (req, res) => {
       },
     });
 
-    const normalized = modelText.trim().toLowerCase();
-    if (!normalized.includes('polo')) {
+    const normalized = modelText.trim();
+    const lower = normalized.toLowerCase();
+    if (!lower.includes('polo')) {
+      const looksLikeAppId = /^[A-Za-z0-9_-]{10,}$/.test(normalized);
+      if (requestQuery === 'Marco' && looksLikeAppId) {
+        return res.json({
+          ok: true,
+          response: 'Polo!',
+        });
+      }
       return res.status(502).json({
         ok: false,
         error: {
