@@ -22,6 +22,39 @@ const upload = multer({
   limits: { fileSize: MAX_IMAGE_SIZE_BYTES },
 });
 
+function enrichScrabbleRack(rackRaw) {
+  if (!Array.isArray(rackRaw)) {
+    return [];
+  }
+
+  const enrichedRack = [];
+  for (const tile of rackRaw) {
+    if (!tile || typeof tile !== 'object') {
+      continue;
+    }
+
+    const isBlank = tile.isBlank === true || tile.letter == null;
+    if (isBlank) {
+      enrichedRack.push({ letter: null, isBlank: true, points: 0 });
+      continue;
+    }
+
+    const normalizedLetter = typeof tile.letter === 'string' ? tile.letter.trim().toUpperCase() : null;
+    if (!normalizedLetter || !/^[A-Z]$/.test(normalizedLetter)) {
+      continue;
+    }
+
+    const points = getScrabblePoints(normalizedLetter, false);
+    if (!Number.isInteger(points)) {
+      continue;
+    }
+
+    enrichedRack.push({ letter: normalizedLetter, isBlank: false, points });
+  }
+
+  return enrichedRack;
+}
+
 // Load dictionary data at startup. Exit early if the file is inaccessible.
 let dictionaryData;
 try {
@@ -100,46 +133,19 @@ app.post('/api/v1/board/parse-screenshot', upload.single('image'), async (req, r
       return res.status(statusCode).json(response);
     }
 
-    if (parsed.board.schema === 'WORDVINDER_SCRABBLE_EXTRACT_V1' && parsed.board.game === 'SCRABBLE') {
-      const rawRack = Array.isArray(parsed.board.rack) ? parsed.board.rack : [];
-      const rackLetters = rawRack.map((tile) => {
-        if (tile && typeof tile.letter === 'string') {
-          return tile.letter;
-        }
-        return null;
-      });
+    const isScrabble =
+      parsed.board.schema === 'WORDVINDER_SCRABBLE_EXTRACT_V1' && parsed.board.game === 'SCRABBLE';
 
-      console.log('Scrabble extract received:', {
-        schema: parsed.board.schema,
-        game: parsed.board.game,
-        rack: rackLetters,
-      });
+    if (isScrabble) {
+      const rawPayload = parsed.rawPayload;
+      const rawRack = rawPayload && typeof rawPayload === 'object' ? rawPayload.rack : parsed.board.rack;
 
-      const enrichedRack = [];
-      for (const tile of rawRack) {
-        if (!tile || typeof tile !== 'object') {
-          continue;
-        }
-        const isBlank = tile.isBlank === true;
-        if (isBlank) {
-          enrichedRack.push({ letter: null, points: 0, isBlank: true });
-          continue;
-        }
+      console.log('[scrabble] raw dify payload:', rawPayload);
+      console.log('[scrabble] about to enrich rack:', rawRack);
 
-        const normalizedLetter = typeof tile.letter === 'string' ? tile.letter.trim().toUpperCase() : null;
-        if (!normalizedLetter || !/^[A-Z]$/.test(normalizedLetter)) {
-          continue;
-        }
+      const enrichedRack = enrichScrabbleRack(rawRack);
 
-        const points = getScrabblePoints(normalizedLetter, false);
-        if (!Number.isInteger(points)) {
-          continue;
-        }
-
-        enrichedRack.push({ letter: normalizedLetter, points, isBlank: false });
-      }
-
-      console.log('Scrabble rack enriched:', enrichedRack);
+      console.log('[scrabble] enriched rack:', enrichedRack);
       parsed.board.rack = enrichedRack;
     }
 
@@ -154,10 +160,14 @@ app.post('/api/v1/board/parse-screenshot', upload.single('image'), async (req, r
       response.debug = { modelText };
     }
 
+    if (isScrabble) {
+      console.log('[scrabble] final response payload:', response);
+    }
     console.log('API_RESPONSE_PAYLOAD', response);
 
     return res.json(response);
   } catch (err) {
+    console.error('[parse-screenshot] ERROR:', err?.stack || err);
     if (err && err.code === 'DIFY_ERROR') {
       const response = {
         ok: false,
@@ -223,6 +233,7 @@ app.post('/api/v1/dify/ping', async (req, res) => {
 });
 
 app.use((err, _req, res, _next) => {
+  console.error('[parse-screenshot] ERROR:', err?.stack || err);
   if (err instanceof multer.MulterError) {
     const isFileSize = err.code === 'LIMIT_FILE_SIZE';
     return res.status(isFileSize ? 413 : 400).json({
