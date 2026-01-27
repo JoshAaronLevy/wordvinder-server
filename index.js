@@ -8,6 +8,7 @@ const multer = require('multer');
 
 const { runBoardExtraction, runMarcoPing } = require('./lib/difyClient');
 const { parseModelOutput, buildSummary } = require('./lib/boardState');
+const { getScrabblePoints } = require('./lib/boardState/scrabble');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -62,6 +63,17 @@ app.post('/api/v1/board/parse-screenshot', upload.single('image'), async (req, r
 
   try {
     const query = req.body && typeof req.body.query === 'string' ? req.body.query : undefined;
+    console.log('DIFY_REQUEST_PAYLOAD', {
+      fileName: req.file.originalname || 'screenshot',
+      mimeType: req.file.mimetype,
+      fileSize: req.file.size,
+      query,
+      requestContext: {
+        ip: req.ip,
+        userAgent: req.get('user-agent'),
+      },
+    });
+
     const { modelText } = await runBoardExtraction({
       fileBuffer: req.file.buffer,
       fileName: req.file.originalname || 'screenshot',
@@ -72,6 +84,8 @@ app.post('/api/v1/board/parse-screenshot', upload.single('image'), async (req, r
         userAgent: req.get('user-agent'),
       },
     });
+
+    console.log('DIFY_RESPONSE_MODEL_TEXT', modelText);
 
     const parsed = parseModelOutput(modelText);
     if (!parsed.ok) {
@@ -86,6 +100,49 @@ app.post('/api/v1/board/parse-screenshot', upload.single('image'), async (req, r
       return res.status(statusCode).json(response);
     }
 
+    if (parsed.board.schema === 'WORDVINDER_SCRABBLE_EXTRACT_V1' && parsed.board.game === 'SCRABBLE') {
+      const rawRack = Array.isArray(parsed.board.rack) ? parsed.board.rack : [];
+      const rackLetters = rawRack.map((tile) => {
+        if (tile && typeof tile.letter === 'string') {
+          return tile.letter;
+        }
+        return null;
+      });
+
+      console.log('Scrabble extract received:', {
+        schema: parsed.board.schema,
+        game: parsed.board.game,
+        rack: rackLetters,
+      });
+
+      const enrichedRack = [];
+      for (const tile of rawRack) {
+        if (!tile || typeof tile !== 'object') {
+          continue;
+        }
+        const isBlank = tile.isBlank === true;
+        if (isBlank) {
+          enrichedRack.push({ letter: null, points: 0, isBlank: true });
+          continue;
+        }
+
+        const normalizedLetter = typeof tile.letter === 'string' ? tile.letter.trim().toUpperCase() : null;
+        if (!normalizedLetter || !/^[A-Z]$/.test(normalizedLetter)) {
+          continue;
+        }
+
+        const points = getScrabblePoints(normalizedLetter, false);
+        if (!Number.isInteger(points)) {
+          continue;
+        }
+
+        enrichedRack.push({ letter: normalizedLetter, points, isBlank: false });
+      }
+
+      console.log('Scrabble rack enriched:', enrichedRack);
+      parsed.board.rack = enrichedRack;
+    }
+
     const summary = buildSummary(parsed.board);
     const response = {
       ok: true,
@@ -96,6 +153,8 @@ app.post('/api/v1/board/parse-screenshot', upload.single('image'), async (req, r
     if (process.env.DEBUG_MODEL_OUTPUT === '1' && process.env.NODE_ENV !== 'production') {
       response.debug = { modelText };
     }
+
+    console.log('API_RESPONSE_PAYLOAD', response);
 
     return res.json(response);
   } catch (err) {
